@@ -7,51 +7,95 @@ end
 # hyphenation algorithm with pattern files. Each object is constructed with
 # a specific language's hyphenation patterns.
 class Text::Hyphen
-  # Resolves a file for cleaner loading from a hyphenation loader file.
-  def self.require_real_hyphenation_file(loader) # :nodoc:
-    p = File.dirname(loader)
-    f = File.basename(loader)
-    v = if RUBY_VERSION < "1.9.1"
-      "1.8"
-    else
-      "1.9"
+  Hyphenation = Struct.new(:word, :points, :candidates, :diagnostics) do
+    def candidate_at(position)
+      candidates.detect { |candidate| candidate.position == position }
     end
-    require File.join(p, v, f)
+
+    def split(position = nil, hyphen = "-")
+      target = position.nil? ? candidates.first : candidate_at(position)
+      target ? target.split(word, hyphen) : [nil, word]
+    end
   end
+  HyphenationResult = Hyphenation
+
+  HyphenationCandidate = Struct.new(
+    :position,
+    :replacement_start,
+    :replacement_end,
+    :left_replacement,
+    :right_replacement,
+    :rule
+  ) do
+    def replacement?
+      !replacement_start.nil?
+    end
+
+    def source_range
+      replacement_start.nil? ? nil : (replacement_start...replacement_end)
+    end
+    alias_method :range, :source_range
+
+    def source
+      rule
+    end
+
+    def left
+      left_replacement
+    end
+
+    def right
+      right_replacement
+    end
+
+    def start
+      replacement_start
+    end
+
+    def stop
+      replacement_end
+    end
+
+    def split(word, hyphen = "-")
+      letters = graphemes(word)
+      if replacement_start.nil?
+        return [letters[0...position].join + hyphen, letters[position..-1].join]
+      end
+
+      left_part = letters[0...replacement_start].join + left_replacement.to_s + hyphen
+      right_part = right_replacement.to_s + (letters[replacement_end..-1] || []).join
+      [left_part, right_part]
+    end
+    alias_method :apply, :split
+
+    private
+
+    def graphemes(value)
+      if value.respond_to?(:grapheme_clusters)
+        value.grapheme_clusters
+      else
+        value.scan(%r{.}u)
+      end
+    end
+  end
+  Candidate = HyphenationCandidate
 
   VERSION = "1.5.0"
 
   DEFAULT_MIN_LEFT = 2
   DEFAULT_MIN_RIGHT = 2
 
-  # No fewer than this number of letters will show up to the left of the
-  # hyphen. The initial value for this will be specified by the language;
-  # setting this value will override the language's defaults.
   attr_accessor :left
-
-  # No fewer than this number of letters will show up to the right of the
-  # hyphen. This overrides the default specified in the language.
   attr_accessor :right
-
-  # The name of the language to be used in hyphenating words. This will be a
-  # two or three character ISO 639 code, with the two character form being
-  # the canonical resource name. This will load the language hyphenation
-  # definitions from text/hyphen/language/&lt;code&gt; as a Ruby class. The
-  # resource "text/hyphen/language/en_us" defines the language class
-  # Text::Hyphen::Language::EN_US. It also defines the secondary forms
-  # Text::Hyphen::Language::EN and Text::Hyphen::Language::ENG_US.
-  #
-  # Minimal transformations will be performed on the language code provided,
-  # such that any dashes are converted to underscores (e.g., "en-us" becomes
-  # "en_us") and all characters are regularised. Resource names will be
-  # downcased and class names will be converted to uppercase (e.g., "Pt" for
-  # the Portuguese language becomes "pt" and "PT", respectively).
-  #
-  # The language may also be specified as an instance of
-  # Text::Hyphen::Language.
-  #
-  # :attr_accessor: language
   attr_reader :language
+  attr_reader :iso_language
+
+  def self.require_real_hyphenation_file(loader) # :nodoc:
+    path = File.dirname(loader)
+    file = File.basename(loader)
+    version = RUBY_VERSION < "1.9.1" ? "1.8" : "1.9"
+    require File.join(path, version, file)
+  end
 
   def language=(lang) # :nodoc:
     require "text/hyphen/language" unless defined?(Text::Hyphen::Language)
@@ -64,25 +108,6 @@ class Text::Hyphen
     end
   end
 
-  # Returns the language's ISO 639 ID, e.g., "en_us" or "pt".
-  attr_reader :iso_language
-
-  # Creates a hyphenation object with the options requested. The options
-  # available are:
-  #
-  # language::  The language to perform hyphenation with. See #language and
-  #             #iso_language.
-  # left::      The minimum number of characters to the left of a
-  #             hyphenation point. See #left.
-  # right::     The minimum number of characters to the right of a
-  #             hyphenation point. See #right.
-  #
-  # The options can be provided either as hashed parameters or set as
-  # methods in an initialization block. The following initializations are
-  # all equivalent:
-  #
-  #   hyp = Text::Hyphenate.new(language: "en_us")
-  #   hyp = Text::Hyphenate.new { |h| h.language = "en_us" }
   def initialize(options = {}) # :yields self:
     @iso_language = options[:language]
     @left = options[:left]
@@ -91,6 +116,7 @@ class Text::Hyphen
 
     @cache = {}
     @vcache = {}
+    @result_cache = {}
 
     @hyphen = {}
     @begin_hyphen = {}
@@ -108,142 +134,64 @@ class Text::Hyphen
     @right ||= DEFAULT_MIN_RIGHT
   end
 
-  # Returns an array of character positions where a word can be hyphenated.
-  #
-  #   hyp.hyphenate("representation") #=> [3, 5, 8 10]
-  #
-  # Because hyphenation can be expensive, if the word has been hyphenated
-  # previously, it will be returned from a per-instance cache.
-  #
-  # #hyphenate supports phrase hyphenation:
-  #
-  #   hyp.hyphenate("This useful library supports phrases and sentences.")
-  #   #=> [8, 14, 23, 27, 34, 44]
-  #
-  # When phrases are hyphenated, each word is processed individually and the
-  # result is returned as a single continuous list of hyphenation points.
+  # Returns an array of grapheme positions where a word can be hyphenated.
   def hyphenate(word)
-    words = if phrase?(word)
-      word.downcase.split(/[[:space:]]/)
-    else
-      [word.downcase]
-    end
-
-    points = words.map do |word|
-      next @cache[word] if @cache.has_key?(word)
-
-      if (exception = @language.exceptions[word])
-        next @cache[word] = make_result_list(exception)
-      end
-
-      letters = word.scan(@language.scan_re)
-      word_size = letters.size
-
-      result = [0] * (word_size + 1)
-      right_stop = word_size - @right
-
-      updater = proc do |hash, str, pos|
-        if hash.has_key?(str)
-          hash[str].scan(@language.scan_re).each_with_index do |cc, ii|
-            cc = cc.to_i
-            result[ii + pos] = cc if cc > result[ii + pos]
-          end
-        end
-      end
-
-      # Walk the word
-      (0..right_stop).each do |pos|
-        rest_length = word_size - pos
-        (1..rest_length).each do |length|
-          substr = letters[pos, length].join("")
-          updater[@language.hyphen, substr, pos]
-          updater[@language.start, substr, pos] if pos.zero?
-          updater[@language.stop, substr, pos] if length == rest_length
-        end
-      end
-
-      updater[@language.both, word, 0] if @language.both[word]
-
-      (0..@left).each { |i| result[i] = 0 }
-      ((-1 - @right)..-1).each { |i| result[i] = 0 }
-      @cache[word] = make_result_list(result)
-    end
-
-    if points.length > 1
-      offset = 0
-      result = []
-
-      points.each_with_index do |word, i|
-        word.each do |pos|
-          result << pos + offset
-        end
-
-        offset += words[i].length + 1
-      end
-
-      result
-    else
-      points.flatten
-    end
+    hyphenation(word).points
   end
 
-  # Returns a visualization of the hyphenation points.
-  #
-  #   hyp.visualize('representation') #=> rep-re-sen-ta-tion
-  #
-  # Any string can be set instead of the default hyphen:
-  #
-  #   hyp.visualize('example', '&shy;') #=> exam&shy;ple
-  #
-  # Because hyphenation can be expensive, if the word has been visualised
-  # previously, it will be returned from a per-instance cache.
-  #
-  # #visualise supports phrase hyphenation:
-  #
-  #   hyp.hyphenate("This useful library supports phrases and sentences.")
-  #   #=> This use-ful li-brary sup-port-s phras-es and sen-tences.
+  # Returns detailed hyphenation candidates, including non-standard source
+  # intervals and replacement fragments. All positions refer to the original
+  # word rather than its lower-cased or normalized form.
+  def hyphenation(word)
+    results = hyphenation_results(word)
+    return results.first if results.length == 1
+
+    points = []
+    candidates = []
+    offset = 0
+
+    results.each do |result|
+      points.concat(result.points.map { |point| point + offset })
+      result.candidates.each do |candidate|
+        moved = candidate.dup
+        moved.position += offset
+        unless moved.replacement_start.nil?
+          moved.replacement_start += offset
+          moved.replacement_end += offset
+        end
+        candidates << moved
+      end
+      offset += graphemes(result.word).length + 1
+    end
+
+    Hyphenation.new(word, points, candidates, results.flat_map(&:diagnostics).uniq)
+  end
+  alias_method :hyphenate_with_replacements, :hyphenation
+
   def visualise(word, hyphen = "-")
     return visualise_phrase(word, hyphen) if phrase?(word)
     return @vcache[word] if @vcache.has_key?(word)
 
-    w = word.dup
-    s = hyphen.size
-    hyphenate(w).each_with_index do |pos, n|
-      # Insert the hyphen string at the ported position plus the offset of
-      # the last hyphen string inserted.
-      w[pos.to_i + (n * s), 0] = hyphen unless pos.zero?
+    @vcache[word] = hyphenation(word).candidates.reverse.reduce(word.dup) do |result, candidate|
+      candidate.split(result, hyphen).join
     end
-    @vcache[word] = w
   end
   alias_method :visualize, :visualise
 
-  # Clears the per-instance hyphenation and visualization caches.
   def clear_cache!
     @cache.clear
     @vcache.clear
+    @result_cache.clear
   end
 
-  # This function will hyphenate a word so that the first point is at most
-  # +size+ characters.
-  #
-  # NOTE: if hyphen is set to a string, it will still be counted as one
-  # character (since it represents a hyphen)
-  #
-  # #hyphenate_to does not support phrase hyphenation and will throw an
-  # exception if there are spaces.
   def hyphenate_to(word, size, hyphen = "-")
     raise ArgumentError, "#hyphenate_to does not support phrases" if phrase?(word)
 
-    point = hyphenate(word).delete_if { |e| e >= size }.max
-    if point.nil?
-      [nil, word]
-    else
-      [word[0...point] + hyphen, word[point..-1]]
-    end
+    result = hyphenation(word)
+    candidate = result.candidates.select { |item| item.position < size }.last
+    candidate ? candidate.split(word, hyphen) : [nil, word]
   end
 
-  # Returns a string describing the structure of the patterns for the
-  # language of this hyphenation object.
   def stats
     stats_both = @language.both.size
     stats_start = @language.start.size
@@ -265,12 +213,150 @@ The language '%s' contains %d total hyphenation patterns.
     s % [@iso_language, stats_total, stats_start, stats_end, stats_both, stats_hyphens, stats_exceptions]
   end
 
-  def make_result_list(res)
-    r = []
-    res.each_with_index { |c, i| r << i * (c.to_i % 2) }
-    r.reject { |i| i.to_i == 0 }
+  private
+
+  def hyphenation_results(input)
+    words = phrase?(input) ? split_phrase(input) : [input]
+    words.map { |word| hyphenate_word(word) }
   end
-  private :make_result_list
+
+  def hyphenate_word(word)
+    return @result_cache[word] if @result_cache.key?(word)
+
+    original = graphemes(word)
+    letters = original.map { |letter| letter.downcase }
+    normalized = letters.join
+    word_size = letters.length
+    weights = [0] * (word_size + 1)
+    winners = [nil] * (word_size + 1)
+    ambiguous = [nil] * (word_size + 1)
+    right_stop = word_size
+
+    apply_pattern = proc do |pattern, position|
+      pattern.weights.each_with_index do |weight, offset|
+        slot = position + offset
+        current = winners[slot]
+
+        if weight > weights[slot]
+          weights[slot] = weight
+          winners[slot] = { :pattern => pattern, :position => position }
+          ambiguous[slot] = nil
+        elsif weight == weights[slot] && current && (replacement_pattern?(pattern) || replacement_pattern?(current[:pattern]))
+          ambiguous[slot] = [current[:pattern], pattern]
+        end
+      end
+    end
+
+    if (exception = @language.exceptions[normalized])
+      exception.weights.each_with_index do |weight, slot|
+        weights[slot] = weight
+        winners[slot] = { :pattern => exception, :position => 0, :exception => true }
+        ambiguous[slot] = nil
+      end
+    else
+      (0..right_stop).each do |position|
+        rest_length = word_size - position
+        (1..rest_length).each do |length|
+          substring = letters[position, length].join("")
+          pattern = @language.hyphen[substring]
+          apply_pattern[pattern, position] if pattern
+
+          if position.zero?
+            pattern = @language.start[substring]
+            apply_pattern[pattern, position] if pattern
+          end
+
+          if length == rest_length
+            pattern = @language.stop[substring]
+            apply_pattern[pattern, position] if pattern
+          end
+        end
+      end
+
+      pattern = @language.both[normalized]
+      apply_pattern[pattern, 0] if pattern
+    end
+
+    candidates = []
+    diagnostics = @language.respond_to?(:diagnostics) ? @language.diagnostics.dup : []
+
+    (1...word_size).each do |position|
+      next unless weights[position].odd?
+      next if position <= @left || word_size - position < @right
+
+      if ambiguous[position]
+        tags = ambiguous[position].map { |pattern| pattern.tag.inspect }.join(", ")
+        message = "overlapping non-standard replacement at position #{position}: #{tags}"
+        diagnostics << message
+      end
+
+      replacement = ambiguous[position] ? nil : replacement_for(word, winners[position], position, diagnostics)
+      candidates << make_candidate(position, replacement)
+    end
+
+    result = Hyphenation.new(word, candidates.map(&:position), candidates, diagnostics.uniq)
+    @result_cache[word] = result
+    @cache[normalized] = result.points
+    result
+  end
+
+  def replacement_pattern?(pattern)
+    pattern.respond_to?(:replacement) && !pattern.replacement.nil?
+  end
+
+  def replacement_for(word, winner, point, diagnostics)
+    return nil if winner.nil?
+
+    pattern = winner[:pattern]
+    replacement = pattern.respond_to?(:replacement) ? pattern.replacement : nil
+    return nil if replacement.nil?
+
+    start = winner[:position] + replacement[:source_start].to_i
+    finish = winner[:position] + replacement[:source_end].to_i
+
+    unless (start..finish).cover?(point)
+      diagnostics << "replacement from #{pattern.tag.inspect} is not bound to position #{point}"
+      return nil
+    end
+
+    source = graphemes(word)[start...finish].join
+    adjusted = replacement.dup
+    adjusted[:source] = source
+    adjusted[:source_start] = start
+    adjusted[:source_end] = finish
+    adjust_replacement_case(adjusted, source)
+  end
+
+  def adjust_replacement_case(replacement, source)
+    if source =~ /[[:alpha:]]/ && source == source.upcase
+      replacement[:left] = replacement[:left].to_s.upcase
+      replacement[:right] = replacement[:right].to_s.upcase
+    elsif source =~ /\A[[:upper:]]/
+      left_parts = graphemes(replacement[:left].to_s)
+      replacement[:left] = if left_parts.empty?
+        replacement[:left].to_s
+      else
+        left_parts[0].upcase + left_parts[1..-1].join
+      end
+      replacement[:right] = replacement[:right].to_s.downcase
+    end
+    replacement
+  end
+
+  def make_candidate(position, replacement = nil)
+    HyphenationCandidate.new(
+      position,
+      replacement && replacement[:source_start],
+      replacement && replacement[:source_end],
+      replacement && replacement[:left],
+      replacement && replacement[:right],
+      replacement && replacement[:source]
+    )
+  end
+
+  def graphemes(value)
+    @language.graphemes(value)
+  end
 
   def load_language
     return if @first_load
@@ -288,22 +374,18 @@ The language '%s' contains %d total hyphenation patterns.
 
     @iso_language
   end
-  private :load_language
 
   def split_phrase(phrase)
     phrase.split(/[[:space:]]+/)
   end
-  private :split_phrase
 
   def visualise_phrase(phrase, hyphen)
     split_phrase(phrase).map { |word| visualise(word, hyphen) }.join(" ")
   end
-  private :visualise_phrase
 
   def phrase?(input)
     /[^[:space:]][[:space:]][^[:space:]]/.match?(input)
   end
-  private :phrase?
 end
 
 # vim: syntax=ruby

@@ -2,6 +2,7 @@
 
 require "test/unit"
 require "text-hyphen"
+require "text/hyphen/language"
 
 class TestTextHyphen < Test::Unit::TestCase
   WORDS = %w[additional declination going leaving maximizes multiple peter

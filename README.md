@@ -46,6 +46,21 @@ Both visualize and hyphenate_to methods allow choosing a custom hyphen:
 puts hh.visualize(word, "&shy;") #=> rep&shy;re&shy;sen&shy;ta&shy;tion
 ```
 
+Non-standard breaks can return more than integer positions. `#hyphenation`
+returns candidates containing the original source interval plus replacement
+fragments for the end of the left line and beginning of the right line:
+
+```ruby
+result = hh.hyphenation(word)
+left, right = result.candidate_at(3).split(word)
+```
+
+Pattern definitions may append `/source/left/right` for such a replacement.
+Positions and minimum left/right lengths use grapheme positions in the
+original word. Unsupported cross-grapheme intervals and tied overlapping
+replacements are available through `result.diagnostics`, while `#hyphenate`
+continues returning the same integer positions.
+
 Text::Hyphen is truly multilingual, with 29 languages or language variants
 supported. As an example, consider the difference between the following:
 
