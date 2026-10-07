@@ -113,4 +113,5 @@ lib/text/hyphen/language/sv.rb
 test/data/bug_9807_latin1.rb
 test/data/bug_9807_utf-8.rb
 test/test_bugs.rb
+test/test_replacements.rb
 test/test_text_hyphen.rb

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Added candidate-based non-standard hyphenation replacements with source
+  intervals, bound left/right replacement text, and diagnostics for unsupported
+  or ambiguous replacements.
+
 ## 1.5.0 / 2023-03-18
 
 - 1 new feature:

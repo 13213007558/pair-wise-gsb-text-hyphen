@@ -46,6 +46,32 @@ Both visualize and hyphenate_to methods allow choosing a custom hyphen:
 puts hh.visualize(word, "&shy;") #=> rep&shy;re&shy;sen&shy;ta&shy;tion
 ```
 
+Non-standard replacements are available through the candidate interface. A
+candidate identifies the source interval in the original word plus the text to
+place at the end of the left line and the beginning of the right line.
+
+```ruby
+language = Text::Hyphen::Language.new do |lang|
+  lang.left = 0
+  lang.right = 0
+  lang.patterns "ba1ck=c/k"
+end
+
+hh = Text::Hyphen.new(language: language, left: 0, right: 0)
+candidate = hh.hyphenate_candidates("backen").first
+candidate.position  #=> 2
+candidate.start     #=> 0
+candidate.finish    #=> 4
+candidate.left      #=> "c"
+candidate.right     #=> "k"
+hh.hyphenate_to_with_replacements("backen", 5) #=> ["c-", "ken"]
+```
+
+Candidates with equal-weighted conflicting replacements or replacements that
+cross a grapheme cluster remain in the result with a diagnostic; their
+`supported?` predicate is false. The legacy `hyphenate`, `visualize`, and
+`hyphenate_to` methods continue to return insertion-only break points.
+
 Text::Hyphen is truly multilingual, with 29 languages or language variants
 supported. As an example, consider the difference between the following:
 
