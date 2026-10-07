@@ -66,6 +66,53 @@ As you can see, the hyphenation is distinct between the two hyphenators.
 Improvements over TeX::Hyphen include thread safety (except for debug control)
 and support for UTF-8 under Ruby 1.9.
 
+## Training Custom Patterns
+
+If you have a domain word list with the allowed break positions marked,
+`Text::Hyphen::Trainer` can learn a compact set of TeX-style patterns that
+loads directly into Text::Hyphen, instead of adding one exception per word.
+Training is fully offline and never modifies the language data shipped with
+the library.
+
+```ruby
+require "text/hyphen/trainer"
+
+trainer = Text::Hyphen::Trainer.new(
+  left: 1,              # minimum letters left of a break
+  right: 1,             # minimum letters right of a break
+  budget: 100,          # maximum number of patterns to learn
+  false_break_cost: 1,  # cost of a break the annotation forbids
+  missed_break_cost: 1, # cost of an allowed break not found
+  validation_fraction: 0.25, # held-out words for validation
+  seed: 42              # makes the validation split reproducible
+)
+result = trainer.train(%w[go-ing leav-ing play-ing re-play un-do through])
+
+puts result.summary
+puts result.pattern_text       # loadable with Text::Hyphen::Language#patterns
+result.hyphenator              # a Text::Hyphen using only the learned patterns
+result.size_comparison         # learned patterns vs per-word exceptions
+```
+
+Candidates are character fragments (optionally anchored to word boundaries)
+with position weights, added layer by layer like Liang's patgen: odd levels
+vote for a break, even levels vote against one. Every candidate is scored by
+the errors it corrects minus the errors it introduces, using the configured
+costs. The reported numbers always come from re-evaluating the learned
+patterns with the real Text::Hyphen matcher, and with fixed input and
+configuration the output is reproducible. If the budget runs out first, the
+result keeps the patterns learned so far plus the unresolved counterexamples
+(`result.complete?` is false) rather than claiming zero errors.
+
+The `ruby-hyphen-train` command wraps the trainer:
+
+```console
+$ ruby-hyphen-train --left 1 --right 1 --budget 100 --seed 42 words.txt
+```
+
+where `words.txt` holds one annotated word per line (`rep-re-sen-ta-tion`);
+blank lines and lines starting with `#` are ignored.
+
 ## Install
 
 gem install text-hyphen

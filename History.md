@@ -1,5 +1,15 @@
 # Changelog
 
+## Next
+
+- 1 new feature:
+
+  - Added Text::Hyphen::Trainer, an offline trainer that learns TeX-style
+    hyphenation patterns from an annotated domain word list (with left/right
+    minima, a pattern budget, and separate false-break/missed-break costs),
+    verifies them with the real matcher, and reports a pattern-vs-exception
+    size comparison. Includes the ruby-hyphen-train command.
+
 ## 1.5.0 / 2023-03-18
 
 - 1 new feature:

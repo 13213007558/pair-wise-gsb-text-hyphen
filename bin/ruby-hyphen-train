@@ -1,0 +1,99 @@
+#!/usr/bin/env ruby
+# Trains TeX-style hyphenation patterns from an annotated word list,
+# offline. See Text::Hyphen::Trainer for details.
+
+require "optparse"
+require "ostruct"
+require "text/hyphen"
+require "text/hyphen/trainer"
+
+options = OpenStruct.new
+options.left = Text::Hyphen::DEFAULT_MIN_LEFT
+options.right = Text::Hyphen::DEFAULT_MIN_RIGHT
+options.budget = Text::Hyphen::Trainer::DEFAULT_BUDGET
+options.levels = Text::Hyphen::Trainer::DEFAULT_LEVELS
+options.max_pattern_length = Text::Hyphen::Trainer::DEFAULT_MAX_PATTERN_LENGTH
+options.false_break_cost = 1
+options.missed_break_cost = 1
+options.validation = Text::Hyphen::Trainer::DEFAULT_VALIDATION_FRACTION
+options.seed = 0
+
+parser = OptionParser.new do |opt|
+  opt.banner = "Usage: " + File.basename($0) + " [options] WORDLIST"
+  opt.separator ""
+  opt.separator "WORDLIST contains one annotated word per line; a hyphen marks an"
+  opt.separator "allowed break (for example rep-re-sen-ta-tion). Blank lines and lines"
+  opt.separator "starting with # are ignored. Training is fully offline and never"
+  opt.separator "modifies the language data shipped with the library."
+  opt.separator ""
+  opt.separator "Options"
+  opt.on("-L", "--left SIZE", Integer, "Minimum letters left of a break.") { |v| options.left = v }
+  opt.on("-R", "--right SIZE", Integer, "Minimum letters right of a break.") { |v| options.right = v }
+  opt.on("-b", "--budget COUNT", Integer, "Maximum number of patterns to learn.") { |v| options.budget = v }
+  opt.on("--levels COUNT", Integer, "Number of pattern levels (weights).") { |v| options.levels = v }
+  opt.on("--max-pattern-length COUNT", Integer, "Maximum letters per pattern.") { |v| options.max_pattern_length = v }
+  opt.on("--false-break-cost COST", Integer, "Cost of a forbidden break.") { |v| options.false_break_cost = v }
+  opt.on("--missed-break-cost COST", Integer, "Cost of a missed allowed break.") { |v| options.missed_break_cost = v }
+  opt.on("--validation FRACTION", Float, "Fraction of words held out for validation.") { |v| options.validation = v }
+  opt.on("--seed SEED", Integer, "Seed for the validation split.") { |v| options.seed = v }
+  opt.on("-o", "--output FILE", "Write the learned patterns to FILE.") { |v| options.output = v }
+  opt.on_tail("-h", "--help", "Shows this help") do
+    $stderr.puts opt
+    exit 0
+  end
+  opt.on_tail("-v", "--version", "Display the program and library version.") do
+    $stderr.puts File.basename($0) + ': Text::Hyphen version ' + Text::Hyphen::VERSION
+    exit 0
+  end
+end
+
+parser.parse!
+
+if ARGV.empty?
+  $stderr.puts parser
+  exit 1
+end
+
+annotations = ARGV.flat_map do |path|
+  File.readlines(path, chomp: true)
+end.map(&:strip).reject do |line|
+  line.empty? || line.start_with?("#")
+end
+
+if annotations.empty?
+  $stderr.puts File.basename($0) + ": no annotated words found in " + ARGV.join(", ")
+  exit 1
+end
+
+trainer = Text::Hyphen::Trainer.new(
+  left: options.left,
+  right: options.right,
+  budget: options.budget,
+  levels: options.levels,
+  max_pattern_length: options.max_pattern_length,
+  false_break_cost: options.false_break_cost,
+  missed_break_cost: options.missed_break_cost,
+  validation_fraction: options.validation,
+  seed: options.seed
+)
+
+begin
+  result = trainer.train(annotations)
+rescue ArgumentError => error
+  $stderr.puts File.basename($0) + ": " + error.message
+  exit 1
+end
+
+puts result.summary
+
+if options.output
+  File.write(options.output, result.pattern_text + "\n")
+  $stderr.puts "wrote " + result.patterns.size.to_s + " patterns to " + options.output
+else
+  puts
+  puts "patterns:"
+  puts result.pattern_text
+end
+
+exit 1 unless result.complete?
+
