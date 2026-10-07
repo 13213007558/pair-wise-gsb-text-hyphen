@@ -70,6 +70,36 @@ and support for UTF-8 under Ruby 1.9.
 
 gem install text-hyphen
 
+## Training Custom Patterns
+
+When you have a domain word list with annotated hyphenation points,
+Text::Hyphen::Trainer builds a compact set of TeX-style patterns offline
+instead of adding one exception per word. Training never touches the
+network and never modifies the bundled language data.
+
+```ruby
+require "text/hyphen/trainer"
+
+words = %w[re-play-ing re-play-ed play-ful un-do-ing makes]
+trainer = Text::Hyphen::Trainer.new(left: 1, right: 1, budget: 50)
+result = trainer.train(words)
+
+puts result.pattern_text # loadable with Text::Hyphen::Language#patterns
+puts result.report       # matcher-verified accuracy, holdout, size comparison
+```
+
+Candidates are character fragments (optionally anchored to a word edge)
+with a weight position, added level by level: odd levels allow breaks,
+even levels forbid them. The cost of a missed break and of a false break
+are configured independently (+miss_cost+ / +false_cost+). The result is
+always re-evaluated through a real Text::Hyphen matcher, is reproducible
+for a fixed input and configuration, and—when the pattern budget runs
+out—still returns the patterns learned so far plus the unresolved
+counterexamples. Part of the word list can be held out for validation
+(+validation+ fraction), and the report compares the size of the compact
+patterns against one exception per word. A command-line front-end is
+available as `bin/ruby-hyphen-train`.
+
 ### A Note About Support on Older Rubies
 
 There is no explicit support for any version of Ruby older than 2.6, but none of

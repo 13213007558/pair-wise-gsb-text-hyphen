@@ -7,6 +7,7 @@ Manifest.txt
 README.md
 Rakefile
 bin/ruby-hyphen
+bin/ruby-hyphen-train
 lib/text-hyphen.rb
 lib/text/hyphen.rb
 lib/text/hyphen/language.rb
@@ -110,7 +111,9 @@ lib/text/hyphen/language/pt.rb
 lib/text/hyphen/language/ru.rb
 lib/text/hyphen/language/sk.rb
 lib/text/hyphen/language/sv.rb
+lib/text/hyphen/trainer.rb
 test/data/bug_9807_latin1.rb
 test/data/bug_9807_utf-8.rb
 test/test_bugs.rb
 test/test_text_hyphen.rb
+test/test_trainer.rb

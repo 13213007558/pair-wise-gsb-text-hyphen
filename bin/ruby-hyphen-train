@@ -1,0 +1,116 @@
+#!/usr/bin/env ruby
+# Trains TeX-style hyphenation patterns offline from an annotated word
+# list and prints pattern text loadable by Text::Hyphen::Language#patterns.
+#
+# Usage:
+#   ruby-hyphen-train [options] WORD [WORD ...]
+#   ruby-hyphen-train [options] --wordlist FILE
+#   ruby-hyphen-train [options] < wordlist.txt
+#
+# Words are annotated with hyphens at allowed break points, e.g.
+# "rep-re-sen-ta-tion". The pattern text is printed to stdout (or written
+# to --output); the training report is printed to stderr.
+
+require "optparse"
+require "ostruct"
+require "text/hyphen/trainer"
+
+options = OpenStruct.new(
+  left: Text::Hyphen::Trainer::DEFAULT_LEFT,
+  right: Text::Hyphen::Trainer::DEFAULT_RIGHT,
+  budget: Text::Hyphen::Trainer::DEFAULT_BUDGET,
+  max_levels: Text::Hyphen::Trainer::DEFAULT_MAX_LEVELS,
+  max_pattern_length: Text::Hyphen::Trainer::DEFAULT_MAX_PATTERN_LENGTH,
+  miss_cost: 1,
+  false_cost: 1,
+  validation: Text::Hyphen::Trainer::DEFAULT_VALIDATION_FRACTION,
+  seed: Text::Hyphen::Trainer::DEFAULT_SEED,
+  wordlist: nil,
+  output: nil
+)
+
+parser = OptionParser.new do |opt|
+  opt.banner = "Usage: #{File.basename($0)} [options] [word ...]"
+  opt.separator ""
+  opt.separator "Input words carry hyphens at allowed break points,"
+  opt.separator "e.g. rep-re-sen-ta-tion. With no words and no --wordlist,"
+  opt.separator "annotated words are read from standard input."
+  opt.separator ""
+
+  opt.on("-W", "--wordlist FILE", "Reads annotated words (one per line) from FILE.") { |file|
+    options.wordlist = file
+  }
+  opt.on("-O", "--output FILE", "Writes the trained patterns to FILE instead of stdout.") { |file|
+    options.output = file
+  }
+  opt.on("-L", "--left SIZE", Integer, "Minimum letters left of a break (default #{options.left}).") { |value|
+    options.left = value
+  }
+  opt.on("-R", "--right SIZE", Integer, "Minimum letters right of a break (default #{options.right}).") { |value|
+    options.right = value
+  }
+  opt.on("-B", "--budget COUNT", Integer, "Maximum number of patterns to train (default #{options.budget}).") { |value|
+    options.budget = value
+  }
+  opt.on("--levels COUNT", Integer, "Maximum pattern level, 1-9 (default #{options.max_levels}).") { |value|
+    options.max_levels = value
+  }
+  opt.on("--max-pattern-length COUNT", Integer, "Maximum pattern length (default #{options.max_pattern_length}).") { |value|
+    options.max_pattern_length = value
+  }
+  opt.on("--miss-cost COST", Integer, "Cost of a missed break (default #{options.miss_cost}).") { |value|
+    options.miss_cost = value
+  }
+  opt.on("--false-cost COST", Integer, "Cost of a false break (default #{options.false_cost}).") { |value|
+    options.false_cost = value
+  }
+  opt.on("--validation FRACTION", Float, "Fraction of words held out for validation (default #{options.validation}).") { |value|
+    options.validation = value
+  }
+  opt.on("--seed SEED", Integer, "Seed for the holdout shuffle (default #{options.seed}).") { |value|
+    options.seed = value
+  }
+  opt.on_tail("-h", "--help", "Shows this message.") {
+    puts opt
+    exit
+  }
+end
+
+parser.parse!(ARGV)
+
+words = ARGV.dup
+if options.wordlist
+  words.concat(File.readlines(options.wordlist, chomp: true))
+elsif words.empty? && !$stdin.tty?
+  words.concat($stdin.readlines(chomp: true))
+end
+words = words.flat_map { |line| line.split(/\s+/) }
+  .map { |word| word.strip }
+  .reject { |word| word.empty? || word.start_with?("#") }
+
+if words.empty?
+  warn "No annotated words given."
+  warn parser
+  exit 1
+end
+
+trainer = Text::Hyphen::Trainer.new(
+  left: options.left,
+  right: options.right,
+  budget: options.budget,
+  max_levels: options.max_levels,
+  max_pattern_length: options.max_pattern_length,
+  miss_cost: options.miss_cost,
+  false_cost: options.false_cost,
+  validation: options.validation,
+  seed: options.seed
+)
+result = trainer.train(words)
+
+if options.output
+  File.write(options.output, result.pattern_text + "\n")
+else
+  puts result.pattern_text
+end
+warn result.report
+
